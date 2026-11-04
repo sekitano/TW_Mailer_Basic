@@ -30,7 +30,7 @@ int main (int argc, char* argv[])
 
     if (argc != 3) 
     {
-        cerr << "Usage: ./twmailer-server <port> <mail-spool-directoryname>" << endl;
+        cerr << "Usage: ./server <port> <mail-spool-directoryname>" << endl;
         return 1;
     }
 
