@@ -1,0 +1,4 @@
+# compiled binaries (build with make)
+twmailer-server
+twmailer-client
+server
