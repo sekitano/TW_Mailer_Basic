@@ -359,9 +359,9 @@ bool handleSend(ClientConnection& client, const string& spoolDirectory)
         return sendResponse(client.socket, "ERR\n");
     }
 
-    file << sender << "\n";
-    file << receiver << "\n";
-    file << subject << "\n";
+    file << "Sender: " << sender << "\n";
+    file << "Receiver: " << receiver << "\n";
+    file << "Subject: " << subject << "\n";
     file << message;
 
     file.close();

@@ -1,0 +1,6 @@
+Sender: ines
+Receiver: ella
+Subject: another message
+hello 
+testing testing test
+yeah :D
