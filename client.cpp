@@ -1,6 +1,7 @@
 #include <iostream>
 #include <string>
 #include <cstdlib>
+#include <cerrno>
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -408,7 +409,11 @@ bool sendAll(int socket, const string& data)
         {
             totalSent += static_cast<size_t>(bytesSent);
         }
-        else 
+        else if (bytesSent == -1 && errno == EINTR) 
+        {
+            continue;
+        }
+        else
         {
             cerr << "Send error" << endl;
             return false;
@@ -422,29 +427,40 @@ bool readLine(Connection& connection, string& line)
 {
     while(true)
     {
-        size_t position = connection.receiveBuffer.find("\n"); // looking for first \n and returns it's position
+        size_t position = connection.receiveBuffer.find('\n'); // looking for first \n and returns it's position
 
         if(position != string::npos) // if(a complete line ending in \n is already in the buffer)
         {
             line = connection.receiveBuffer.substr(0, position); // returns everything before position(\n)
             connection.receiveBuffer.erase(0, position +1); // deletes everything inkluding \n from buffer
+
+            if (!line.empty() && line.back() == '\r')
+            {
+                line.pop_back();
+            }
+
             return true;
         }
 
         char buffer[1024];
         ssize_t bytesReceived = recv(connection.socket, buffer, sizeof(buffer), 0);
-        if(bytesReceived == -1)
+        if(bytesReceived > 0)
         {
-            cerr << "Receive error" << endl;
-            return false;
+            connection.receiveBuffer.append(buffer, bytesReceived); // adds local buffer contents to receiveBuffer
         }
-
-        if(bytesReceived == 0)
+        else if(bytesReceived == 0)
         {
             cerr << "Server connection is closed" << endl;
             return false; 
         }
-
-        connection.receiveBuffer.append(buffer, bytesReceived); // adds local buffer contents to receiveBuffer
+        else if(errno == EINTR)
+        {
+            continue;
+        }
+        else
+        {
+            cerr << "Receive error" << endl;
+            return false;
+        }
     }
 }

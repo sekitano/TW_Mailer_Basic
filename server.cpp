@@ -25,6 +25,11 @@ bool readLine(ClientConnection& client, string& line);
 bool sendAll(int clientSocket, const string& data);
 bool sendResponse(int clientSocket, const string& response);
 
+bool handleSend(ClientConnection& client, const string& spoolDirectory);
+bool handleList(ClientConnection& client, const string& spoolDirectory);
+bool handleRead(ClientConnection& client, const string& spoolDirectory);
+bool handleDelete(ClientConnection& client, const string& spoolDirectory);
+
 int main (int argc, char* argv[])
 {
 
@@ -57,7 +62,7 @@ int main (int argc, char* argv[])
 
     if (serverSocket == -1)
     {
-        cerr << "Error creaing Socket!" << endl;
+        cerr << "Error creating Socket!" << endl;
         return 1;
     }
 
@@ -114,22 +119,70 @@ int main (int argc, char* argv[])
 
         ClientConnection client{clientSocket, ""}; // erstellen ClientConnection var, clientSocket -> socket vom verbundenen client, "" -> leerer empfangsbuffer
 
-        string receivedLine;
-
-        if (readLine(client, receivedLine)) // textzeile wird von client empfangen, wenn erfolgreich dann == true, nachricht wird in receivedLine gespeichert
+        while (true)
         {
-            cout << "Received: " << receivedLine << endl;
+            string command;
 
-            if (!sendResponse(client.socket, "OK\n"))
+            if (!readLine(client, command))
             {
-                cerr << "Error sending response!" << endl;
+                cout << "Client closed connection or receiving failed." << endl;
+                break;
+            }
+
+            cout << "Received command: " << command << endl;
+
+            if (command == "SEND")
+            {
+                if (!handleSend(client, spoolDirectory))
+                {
+                    cerr << "Error handling SEND command!" << endl;
+                    break;
+                }
+            }
+
+            else if (command == "LIST")
+            {
+                if (!handleList(client, spoolDirectory))
+                {
+                    cerr << "Error handling LIST command!" << endl;
+                    break;
+                }
+            }
+
+            else if (command == "READ")
+            {
+                if (!handleRead(client, spoolDirectory))
+                {
+                    cerr << "Error handling READ command!" << endl;
+                    break;
+                }
+            }
+
+            else if (command == "DEL")
+            {
+                if (!handleDelete(client, spoolDirectory))
+                {
+                    cerr << "Error handling DEL command!" << endl;
+                    break;
+                }
+            }
+
+            else if (command == "QUIT")
+            {
+                cout << "Client requested to quit." << endl;
+                break;
+            }
+            else
+            {
+                cerr << "Unknown command: " << command << endl;
+
+                if (!sendResponse(client.socket, "ERR\n"))
+                {
+                    cerr << "Error sending response!" << endl;
+                    break;
+                }
             }
         }
-        else
-        {
-            cout << "Client closed connection or receiving failed." << endl;
-        }
-        
 
         close(clientSocket);
 
@@ -216,4 +269,364 @@ bool readLine(ClientConnection& client, string& line)
             return false;
          }
     }
+}
+
+bool handleSend(ClientConnection& client, const string& spoolDirectory)
+{
+    string sender;
+    string receiver;
+    string subject;
+    string message;
+    string line;
+
+    if (!readLine(client, sender)) 
+    {
+        return false;
+    }
+    if (!readLine(client, receiver)) 
+    {
+        return false;
+    }
+    if (!readLine(client, subject)) 
+    {
+        return false;
+    }
+
+    while (true)
+    {
+        if (!readLine(client, line)) 
+        {
+            return false;
+        }
+
+        if (line == ".") 
+        {
+            break;
+        }
+
+        message += line + "\n";
+    }
+
+    auto isValidUsername = [](const string& username)
+    {
+        if (username.empty() || username.length() > 8)
+        {
+            return false;
+        }
+
+        for (char c : username)
+        {
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    };
+
+    if (!isValidUsername(sender) || !isValidUsername(receiver) || subject.empty() || subject.length() > 80)
+    {
+        return sendResponse(client.socket, "ERR\n");
+    }
+
+    fs::path userDirectory = fs::path(spoolDirectory) / receiver;
+
+    try
+    {
+        fs::create_directories(userDirectory);
+    }
+    catch (const fs::filesystem_error& e)
+    {
+        cerr << "Cannot create user directory: " << e.what() << endl;
+        return sendResponse(client.socket, "ERR\n");
+    }
+
+    size_t messageNumber = 1;
+
+    while (fs::exists(userDirectory / (to_string(messageNumber) + ".txt")))
+    {
+        messageNumber++;
+    }
+
+    fs::path messageFile = userDirectory / (to_string(messageNumber) + ".txt");
+
+    ofstream file(messageFile);
+
+    if (!file)
+    {
+        cerr << "Cannot create message file!" << endl;
+        return sendResponse(client.socket, "ERR\n");
+    }
+
+    file << sender << "\n";
+    file << receiver << "\n";
+    file << subject << "\n";
+    file << message;
+
+    file.close();
+
+    if (!file)
+    {
+        cerr << "Error writing message file!" << endl;
+        fs::remove(messageFile);
+        return sendResponse(client.socket, "ERR\n");
+    }
+
+    return sendResponse(client.socket, "OK\n");
+
+}
+
+bool handleList(ClientConnection& client, const string& spoolDirectory)
+{
+    string username;
+
+    if (!readLine(client, username))
+    {
+        return false;
+    }
+
+    if (username.empty() || username.length() > 8)
+    {
+        return sendResponse(client.socket, "0\n");
+    }
+
+    for (char c : username)
+    {
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')))
+        {
+            return sendResponse(client.socket, "0\n");
+        }
+    }
+
+    fs::path userDirectory = fs::path(spoolDirectory) / username;
+
+    if (!fs::exists(userDirectory))
+    {
+        return sendResponse(client.socket, "0\n");
+    }
+
+    string response;
+    size_t messageCount = 0;
+
+    while (true)
+    {
+        fs::path messageFile = userDirectory / (to_string(messageCount + 1) + ".txt");
+
+        if (!fs::exists(messageFile))
+        {
+            break;
+        }
+
+        ifstream file(messageFile);
+
+        if (!file)
+        {
+            return false;
+        }
+
+        string sender;
+        string receiver;
+        string subject;
+
+        getline(file, sender);
+        getline(file, receiver);
+        getline(file, subject);
+
+        response += subject + "\n";
+        messageCount++;
+    }
+
+    string countResponse = to_string(messageCount) + "\n";
+
+    return sendResponse(client.socket, countResponse + response);
+}
+
+bool handleRead(ClientConnection& client, const string& spoolDirectory)
+{
+    string username;
+    string numberLine;
+
+    if (!readLine(client, username))
+    {
+        return false;
+    }
+
+    if (!readLine(client, numberLine))
+    {
+        return false;
+    }
+
+    if (username.empty() || username.length() > 8)
+    {
+        return sendResponse(client.socket, "ERR\n");
+    }
+
+    for (char c : username)
+    {
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')))
+        {
+            return sendResponse(client.socket, "ERR\n");
+        }
+    }
+
+    if (numberLine.empty())
+    {
+        return sendResponse(client.socket, "ERR\n");
+    }
+
+    for (char c : numberLine)
+    {
+        if (c < '0' || c > '9')
+        {
+            return sendResponse(client.socket, "ERR\n");
+        }
+    }
+
+    size_t messageNumber;
+
+    try
+    {
+        messageNumber = stoull(numberLine);
+    }
+    catch (const exception&)
+    {
+        return sendResponse(client.socket, "ERR\n");
+    }
+
+    if (messageNumber == 0)
+    {
+        return sendResponse(client.socket, "ERR\n");
+    }
+
+    fs::path messageFile = fs::path(spoolDirectory) / username / (to_string(messageNumber) + ".txt");
+
+    if (!fs::exists(messageFile))
+    {
+        return sendResponse(client.socket, "ERR\n");
+    }
+
+    ifstream file(messageFile);
+
+    if (!file)
+    {
+        return sendResponse(client.socket, "ERR\n");
+    }
+
+    string response = "OK\n";
+    string line;
+
+    while (getline(file, line))
+    {
+        response += line + "\n";
+    }
+
+    if (file.bad())
+    {
+        return sendResponse(client.socket, "ERR\n");
+    }
+
+    response += ".\n";
+
+    return sendResponse(client.socket, response);
+}
+
+bool handleDelete(ClientConnection& client, const string& spoolDirectory)
+{
+    string username;
+    string numberLine;
+
+    if (!readLine(client, username))
+    {
+        return false;
+    }
+
+    if (!readLine(client, numberLine))
+    {
+        return false;
+    }
+
+    if (username.empty() || username.length() > 8)
+    {
+        return sendResponse(client.socket, "ERR\n");
+    }
+
+    for (char c : username)
+    {
+        if(!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')))
+        {
+            return sendResponse(client.socket, "ERR\n");
+        }
+    }
+
+    if (numberLine.empty())
+    {
+        return sendResponse(client.socket, "ERR\n");
+    }
+
+    for (char c : numberLine)
+    {
+        if (c < '0' || c > '9')
+        {
+            return sendResponse(client.socket, "ERR\n");
+        }
+    }
+
+    size_t messageNumber;
+
+    try
+    {
+        messageNumber = stoull(numberLine);
+    }
+    catch (const exception&)
+    {
+        return sendResponse(client.socket, "ERR\n");
+    }
+
+    if (messageNumber == 0)
+    {
+        return sendResponse(client.socket, "ERR\n");
+    }
+
+    fs::path userDirectory = fs::path(spoolDirectory) / username;
+
+    if (!fs::exists(userDirectory))
+    {
+        return sendResponse(client.socket, "ERR\n");
+    }
+
+    fs::path messageFile = userDirectory / (to_string(messageNumber) + ".txt");
+
+    if (!fs::exists(messageFile))
+    {
+        return sendResponse(client.socket, "ERR\n");
+    }
+
+    try
+    {
+        size_t messageCount = 0;
+
+        while (fs::exists(userDirectory / (to_string(messageCount + 1) + ".txt")))
+        {
+            messageCount++;
+        }
+
+        fs::remove(messageFile);
+
+        for (size_t i = messageNumber + 1; i <= messageCount; i++)
+        {
+            fs::path oldFile = userDirectory / (to_string(i) + ".txt");
+
+            fs::path newFile = userDirectory / (to_string(i - 1) + ".txt");
+
+            fs::rename(oldFile, newFile);
+        }
+    }
+    catch (const fs::filesystem_error& e)
+    {
+        cerr << "Error deleting message: " << e.what() << endl;
+        return sendResponse(client.socket, "ERR\n");
+    }
+
+    return sendResponse(client.socket, "OK\n");
 }
